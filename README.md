@@ -134,3 +134,26 @@ java -cp "target/classes:$(cat target/cp.txt)" com.novel.SocketMain
 - Firebase 서비스 계정 JSON
 - `vendor/` (Composer 의존성)
 - `upload/` 의 실제 사용자 이미지 — 개인정보라 제외했습니다
+
+---
+
+## 동작 실증 (2026-09-04)
+
+실제 서버에 채팅 서버를 띄우고 Android 에뮬레이터에서 왕복을 확인했습니다.
+
+```text
+6080 LISTEN · java RSS 약 110MB (t2.micro 949MB 중)
+앱에서 전송 → 서버 처리 → DB 저장(id 부여) → FCM 팬아웃까지 성공
+```
+
+클라이언트 로그에서 서버가 되돌려준 페이로드를 그대로 확인했습니다.
+
+```json
+{"chat_message":{"chat_room_id":6,"content":"RawTCP-live-test","id":396,
+  "send_date":"2026-09-04 21:59:48","uid":22},
+ "message":"서버에서 보내기 sendMethod 실행됨","method":"send"}
+```
+
+**띄울 때 실제로 걸린 함정** — `~/.m2` 에 guava 16.0.1 이 함께 있어 classpath 앞쪽에 잡히면
+Firebase 가 `NoSuchMethodError: MoreExecutors.directExecutor()` 로 죽습니다
+(`directExecutor` 는 guava 18부터). **소켓은 정상적으로 뜨고 FCM 만 죽기 때문에 놓치기 쉽습니다.**
