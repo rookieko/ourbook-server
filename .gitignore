@@ -1,0 +1,23 @@
+# --- 비밀 · 재유입 방지 ---
+common/config.php
+**/*firebase-adminsdk*.json
+**/*service-account*.json
+firebase-service-account.json
+.env
+
+# --- 의존성 · 빌드 산출물 ---
+vendor/
+**/target/
+*.class
+
+# --- 로그 ---
+*.log
+php_errors.log
+
+# --- 사용자 업로드 (개인정보) ---
+upload/bookCover/*
+upload/profileImage/*
+!upload/*/.gitkeep
+
+# --- OS ---
+.DS_Store
