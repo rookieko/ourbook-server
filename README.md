@@ -52,7 +52,63 @@ db/schema.sql  스키마 · 트리거 6개 · 프로시저
 | PHP 파일 | 57 | `vendor/` 제외 전체. 엔드포인트 외 설정·헬퍼 포함 |
 | 채팅 Java 소스 | 28 | `novel-talk/chat/src/main` 아래 `.java` |
 | DB 테이블 | 22 | `schema.sql` |
-| 트리거 | 6 | 좋아요 점수·조회수·채팅방 인원 자동 갱신 |
+| 트리거 | 6 | 좋아요 점수·조회수·채팅방 인원 자동 갱신 ([표](#트리거-6개)) |
+
+---
+
+## CRUD 로 본 기능
+
+엔드포인트를 나열하면 "많다" 는 것밖에 안 보입니다. **기능별로 CRUD 어디까지 있는지**
+세워 보면 이 프로젝트가 실제로 무엇이고 무엇이 아닌지가 드러납니다. 빈 칸도 그대로 둡니다.
+
+| 기능 | C | R | U | D |
+|---|---|---|---|---|
+| 회원 | `sign-up` | `getUserInfo` | `updateUserName` · `updateUserPW` · `profileImageEdit` | `deleteUser` |
+| 작품 | `regist-webnovel` | `get-one-book-data` · `explore/*` · `search/*` | `webnovel-update` (`change=title\|category\|summary`) | `webnovel-update` (`change=delete`) |
+| 회차 | `regist-chapter` | `item-webnovel-chapter` · `get-own-chapter` | `chapter-update` (`change=change`) | `chapter-update` (그 외) |
+| 리뷰 | `regis-review` | `item-webnovel-comment` · `get-best-review` · `get-own-review` · `get-review-statics` | `regis-review` (`ON DUPLICATE KEY UPDATE`) | **없음** |
+| 리뷰 좋아요 | `regis-review-like` | 리뷰 목록 응답에 포함 | — | `regis-review-like` (`like_or_not`) |
+| 읽기 위치 | `upsert-read-data` | `get-chapter-read` | `upsert-read-data` | — |
+| 채팅방 | `regis-chat-room` | `load-chat-room` · `load-chat-room-detail` · `search-chat-room` | `join-chat-room` | 소프트 삭제 (`class` 컬럼) |
+| 채팅 메시지 | **Raw TCP `send`** | `load-chat` | — | — |
+| 관심목록 | **없음** | `LEFT JOIN likes` | — | **없음** |
+
+**CRUD 가 완비된 것은 회원 하나뿐입니다.**
+
+### 규약 — REST 동사 대신 액션 파라미터
+
+표를 보면 U 와 D 가 같은 파일에 반복해서 나옵니다. 우연이 아니라 규약이었습니다.
+
+```php
+// webnovel-update.php
+switch ($_POST['change']) {
+    case 'title':    … UPDATE webnovel SET title = ? …
+    case 'category': … case 'summary': …
+    case 'delete':   … DELETE FROM webnovel …
+}
+```
+
+`chapter-update.php` 는 `change == "change"` 면 UPDATE, 아니면 DELETE.
+`regis-review-like.php` 는 `like_or_not` 으로 등록과 해제를 가릅니다.
+읽기 위치는 이름부터 `upsert-read-data` 이고, 리뷰는 `ON DUPLICATE KEY UPDATE` 로
+C 와 U 를 합쳤습니다.
+
+`webnovel-update.php` 의 필드별 `case` 는 사실상 **PATCH** 를 엔드포인트 하나로 표현한 것입니다.
+
+지금이라면 자원별 경로에 HTTP 동사를 매핑하겠습니다. 다만 이건 취향 문제가 아니라
+**실제로 손해가 있습니다** — 액션 이름이 본문 안에 있으니 URL 만 봐서는 무엇을 하는지 알 수 없고,
+클라이언트가 오타를 내면 `switch` 의 어느 `case` 에도 안 걸려 **조용히 아무 일도 일어나지 않습니다.**
+
+### 규약에서 빠진 곳
+
+- **리뷰에 삭제가 없습니다.** 규약대로였다면 `regis-review.php` 에 `change=delete` 가 있었을 자리입니다.
+  스키마에는 의도가 남아 있습니다 — `novel_rating.score` 주석이 *"만약 0 이면 평점 삭제"* 인데
+  `score == 0` 을 처리하는 코드가 없습니다
+- **삭제만 소프트/하드가 갈립니다.** 채팅방은 `class` 컬럼을 바꾸는 소프트 삭제인데
+  나머지는 하드 `DELETE` 입니다. 트리거는 하드 삭제 기준이라 어긋납니다 — 아래 *회고* 4번
+- **관심목록은 읽기만 됩니다.** 서버에 `INSERT INTO likes` · `DELETE FROM likes` 가 없고,
+  `LEFT JOIN likes` 로 현재 상태를 내려 주기만 합니다. 클라이언트 쪽 상황은
+  [앱 저장소의 *알려진 한계*](https://github.com/rookieko/ourbook-android#관심목록은-표시만-되고-등록해제가-안-됩니다)에 적었습니다
 
 ---
 
@@ -120,8 +176,67 @@ java -cp "target/classes:$(cat target/cp.txt)" com.novel.SocketMain
 `INSERT IGNORE` / `DELETE` 만 합니다. `comment.like_score` 의 증감은 **AFTER INSERT ·
 AFTER DELETE 트리거**가 처리합니다. 앱이 집계를 직접 더하지 않으므로 동시 요청에도 어긋나지 않습니다.
 
-`db/schema.sql` 에는 이런 트리거가 6개 있습니다. **다만 그중 채팅방 인원수 트리거는
-앱 동작과 어긋나 있습니다** — 아래 *회고* 4번을 보십시오.
+### 그런데 평균 점수는 트리거가 만들지 않습니다
+
+**좋아요는 평균 점수를 바꾸지 않습니다.** 위 트리거가 건드리는 것은 `comment.like_score`,
+즉 그 리뷰가 받은 좋아요 수 하나뿐입니다. 평균이 움직이는 계기는 리뷰 등록과 재평가뿐입니다.
+
+그리고 그 평균은 **저장돼 있지 않습니다.** 조회할 때마다 다시 집계합니다.
+
+```sql
+-- getSimpleReveiwData(): 작품 상세에 뜨는 종합 점수
+SELECT AVG(novel_rating.score) FROM novel_rating
+WHERE novel_rating.wid = ? AND novel_rating.type_id = 0;
+
+-- getReviewStaticData(): 리뷰 목록 상단의 축별 통계
+SELECT type_id, AVG(novel_rating.score) FROM novel_rating
+WHERE novel_rating.wid = ? GROUP BY novel_rating.type_id;
+```
+
+### 같은 프로젝트 안에 비정규화 두 방식이 있습니다
+
+| | 방식 | 갱신 주체 |
+|---|---|---|
+| 좋아요 수 | 컬럼에 저장 (`comment.like_score`) | **트리거** |
+| 조회수 | 컬럼에 저장 (`webnovel.total_views`) | **트리거** |
+| 평균 점수 | 저장 안 함 | 조회할 때마다 `AVG()` |
+
+각각 이유는 있습니다. 좋아요와 조회수는 쓰기가 잦고 읽기는 더 잦아 캐시가 이득이고,
+평점은 작품당 리뷰가 몇 건이라 매번 집계해도 쌉니다.
+
+**문제는 그 판단이 코드 어디에도 안 적혀 있다는 것입니다.** 게다가 `webnovel` 테이블에는
+`average_rating` 컬럼이 **있습니다.** 주석까지 달려 있습니다 —
+*"평균 별점, 사용자가 Rating DB 에 insert, update 할 때 마다 조회 하게 설정"*.
+
+그런데 **아무도 그 컬럼을 읽지도 쓰지도 않습니다. 34행 전부 NULL 입니다.**
+클라이언트에는 대응 필드(`SearchItemDTO.average_rating`)가 있어 항상 null 을 받습니다.
+
+캐시 컬럼을 설계해 두고 채우지 않은 채, 실제로는 매번 집계하는 쪽으로 굴러온 것입니다.
+동작에는 문제가 없지만 **읽는 사람에게는 미완성으로 보입니다.** 지금 고른다면 컬럼을 지워
+"매번 집계한다" 는 의도를 분명히 하겠습니다.
+
+### 트리거 6개
+
+`db/schema.sql` 에 있는 전부입니다.
+
+| 트리거 | 시점 | 하는 일 |
+|---|---|---|
+| `after_chat_insert` | `chat` INSERT | 채팅 저장 후처리 |
+| `after_user_joins_chat_room` | `chat_room_user` INSERT | 채팅방 인원수 +1 |
+| `after_user_exits_chat_room` | `chat_room_user` DELETE | 채팅방 인원수 −1 |
+| `update_like_score_after_insert` | `comment_rating` INSERT | `comment.like_score` +1 |
+| `update_like_score_after_delete` | `comment_rating` DELETE | `comment.like_score` −1 |
+| `increase_views` | `history_view` INSERT | `webnovel.total_views` +1 |
+
+**`after_user_exits_chat_room` 만 앱 동작과 어긋납니다** — 앱은 하드 삭제를 쓰지 않습니다.
+아래 *회고* 4번을 보십시오.
+
+### 평가 축은 5개인데 스키마 주석은 4개입니다
+
+`novel_rating.type_id` 주석은 `0 = 총점 , 1 = 세계관 , 2 = 캐릭터 , 3 = 스토리` 로 멈춰 있습니다.
+실제 데이터는 `type_id` 0~5 이고, 행 수가 이력을 그대로 보여줍니다 —
+**0·1·2·3 은 6행씩, 4·5 는 2행씩.** 글쓰기 품질과 업데이트 안정성이 나중에 추가됐고
+주석은 따라가지 않았습니다. 스키마 주석을 신뢰할 수 없는 예로 남겨 둡니다.
 
 ---
 
@@ -155,6 +270,22 @@ AFTER DELETE 트리거**가 처리합니다. 앱이 집계를 직접 더하지 �
 
 고치려면 트리거를 UPDATE 기반으로 바꾸거나 앱을 하드 삭제로 바꿔야 하는데, 어느 쪽이든 기존 데이터 정합성을 다시 봐야 해서 **이번에는 기록만 하고 두었습니다.**
 
+### 5. 리뷰 통계 엔드포인트만 인증이 꺼져 있었다
+
+- **문제** — `webnovel/review/get-review-statics.php` 만 `checkToken()` 이 **주석 처리**돼 있었고,
+  `$wid` 도 `(int)` 캐스팅 없이 `getReviewStaticData()` 로 넘어갔습니다. 그 함수는 값을
+  쿼리 문자열에 그대로 넣습니다 (`WHERE novel_rating.wid = $wid`).
+  즉 **인증 없이 호출 가능하고, 값이 그대로 SQL 에 들어가는** 경로였습니다
+- **어떻게 찾았나** — 평균 점수가 어디서 계산되는지 문서에 쓰려고 호출 사슬을 따라가다 발견했습니다.
+  기능은 정상 동작하고 있었으므로 화면만 봐서는 드러나지 않습니다
+- **선택** — 그 파일 두 줄로 닫았습니다. `checkToken()` 을 되살리고 `$wid = (int)$_GET["wid"];`.
+  같은 폴더의 나머지 5개는 원래 `checkToken()` 이 살아 있었고,
+  `get-one-book-data.php` 는 캐스팅까지 하고 있었습니다 — **이 파일만 둘 다 빠져 있었습니다**
+- **범위** — `webnovelQuery.php` 의 문자열 보간은 그대로 둡니다. 회고 2번과 같은 부채이고,
+  전면 이관은 이번 정리의 범위 밖으로 정했습니다. 진입점에서 좁히는 것으로 끝냅니다
+- **검증** — `php -l` 통과. 클라이언트(`ReviewService.getReviewStatisticsData`)는
+  원래부터 JWT 헤더를 보내고 있어 인증 복구로 깨지는 곳이 없습니다
+
 ### 알려진 보안 부채 (그대로 남아 있음)
 
 | 항목 | 상태 |
@@ -162,6 +293,8 @@ AFTER DELETE 트리거**가 처리합니다. 앱이 집계를 직접 더하지 �
 | 비밀번호 평문 저장·평문 비교 | 미해결. 해시로 바꾸면 기존 계정이 전부 무효가 됨 |
 | MariaDB 3307 포트 외부 노출 | 미해결. 토이 프로젝트 서버라 방치했고, 회고 자산으로 남김 |
 | `error-show.php` 가 `display_errors` 를 켠다 | 미해결. 오류 노출 위험 |
+| `checkToken()` 이 JWT 헤더 부재 시 401 이 아니라 500 | 미해결. `memberToken.php` 가 `isset` 없이 헤더를 읽어 `JWT::decode(null, …)` 이 TypeError 로 죽습니다. `display_errors` 와 겹치면 스택 트레이스까지 나갑니다. 공통 인증 코드라 전 엔드포인트에 영향이 가서 이번에는 손대지 않았습니다 |
+| 쿼리 헬퍼가 값을 문자열로 이어 붙인다 | 부분 해결. 진입점에서 `(int)` 로 좁히지만 `webnovelQuery.php` 자체는 그대로입니다 |
 
 ---
 
