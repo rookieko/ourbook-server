@@ -88,6 +88,43 @@ java -cp "target/classes:$(cat target/cp.txt)" com.novel.SocketMain
 
 ---
 
+## 리뷰·평점 — 다축 평가와 트리거 집계
+
+채팅 다음으로 볼 만한 곳입니다. `webnovel/review/` 에 엔드포인트 6개가 있습니다.
+
+| 파일 | 줄 | 하는 일 |
+|---|---:|---|
+| `regis-review.php` | 44 | 리뷰 등록 · 재평가 |
+| `item-webnovel-comment.php` | 44 | 작품별 리뷰 목록 (정렬 옵션) |
+| `regis-review-like.php` | 38 | 리뷰 좋아요 (= 댓글 평가) |
+| `get-review-statics.php` | 37 | 축별 평점 통계 |
+| `get-own-review.php` | 30 | 리뷰 단건 조회 |
+| `get-best-review.php` | 23 | 베스트 리뷰 |
+
+### `registerReview()` — 이 저장소의 트랜잭션 참조 구현
+
+`webnovel/webnovelQuery.php:304`. 리뷰 하나를 등록하는 일이 **두 테이블에 걸쳐 있습니다.**
+다섯 축 점수는 `novel_rating` 에 `type_id` 로 나뉘어 들어가고, 본문은 `comment` 로 갑니다.
+둘 중 하나만 남으면 "점수는 있는데 글이 없는" 리뷰가 생깁니다.
+
+- `begin_transaction()` 으로 묶고, 예외에서 `rollback()`
+- 전 구간 prepared statement — `bind_param("iiid")` / `bind_param("iis")`
+- 재평가는 `INSERT … ON DUPLICATE KEY UPDATE` 로 **덮어쓰기**. 중복 행이 쌓이지 않습니다
+
+이 프로젝트의 다른 곳에는 문자열 연결로 만든 SQL 이 남아 있습니다(아래 *회고* 2번 참고).
+그래서 **여기를 기준으로 삼고 나머지를 이쪽으로 옮기는 중**이라고 읽는 편이 정확합니다.
+
+### 좋아요 집계는 애플리케이션이 아니라 트리거가 한다
+
+`:531` `registerReviewLike()` / `:561` `unregisterReviewLike()` 는 `comment_rating` 에
+`INSERT IGNORE` / `DELETE` 만 합니다. `comment.like_score` 의 증감은 **AFTER INSERT ·
+AFTER DELETE 트리거**가 처리합니다. 앱이 집계를 직접 더하지 않으므로 동시 요청에도 어긋나지 않습니다.
+
+`db/schema.sql` 에는 이런 트리거가 6개 있습니다. **다만 그중 채팅방 인원수 트리거는
+앱 동작과 어긋나 있습니다** — 아래 *회고* 4번을 보십시오.
+
+---
+
 ## 회고 — 스스로 찾아 고친 것
 
 2026년에 이 프로젝트를 다시 열어 직접 감사하고 고쳤습니다. **결함을 숨기지 않고, 왜 여기까지만 했는지도 함께 적습니다.**
@@ -153,6 +190,38 @@ java -cp "target/classes:$(cat target/cp.txt)" com.novel.SocketMain
   "send_date":"2026-09-04 21:59:48","uid":22},
  "message":"서버에서 보내기 sendMethod 실행됨","method":"send"}
 ```
+
+### 터미널을 두 번째 참여자로 세운 데모 (2026-09-07)
+
+폰 두 대를 붙이면 "채팅이 된다"만 보입니다. **프로토콜을 직접 설계했다는 주장을 증명하려면
+클라이언트가 앱이 아니어도 된다는 걸 보여야 합니다.**
+
+그래서 두 번째 참여자를 터미널로 세웠습니다. `nc` 수준의 소켓 하나로 붙어
+개행 JSON 을 한 줄씩 던지면, 앱이 그걸 그냥 받습니다.
+
+```text
+$ python3 tcp_client.py <server> 6080      # Raw TCP · 개행 구분 JSON
+
+--> {"method":"init","jwt":"<마스킹>","fcm_token":"demo-terminal-client"}
+
+--> {"method":"send","chat_message":{
+       "chat_room_id":6,"chat_room_user_id":20,"username":"팀노바",
+       "content":"터미널에서 보낸 Raw TCP 메시지",
+       "new_date":1788746037242,"option":0}}
+
+<-- {"method":"send","message":"서버에서 보내기 sendMethod 실행됨",
+     "chat_message":{"id":397,"uid":40,"send_date":"2026-09-07 10:53:57"}}
+
+<-- {"method":"refresh_chat_id","list_chat_room_user":[ … 참여자 3명, last_read_chat_id=397 ]}
+```
+
+던진 줄이 앱 화면에 뜨는 장면입니다. 앱은 다른 계정(`uid 22`)으로 로그인해 있어
+터미널이 보낸 메시지를 **상대방 말풍선**으로 그립니다.
+
+![Raw TCP 채팅 데모](docs/demo/chat_raw_tcp.gif)
+
+`send` 한 번에 서버가 하는 일이 응답에 다 드러납니다 — DB 에 저장하며 `id` 를 부여하고(397),
+방 참여자 전원에게 브로드캐스트하고, 이어서 `refresh_chat_id` 로 각자의 읽음 위치를 갱신합니다.
 
 **띄울 때 실제로 걸린 함정** — `~/.m2` 에 guava 16.0.1 이 함께 있어 classpath 앞쪽에 잡히면
 Firebase 가 `NoSuchMethodError: MoreExecutors.directExecutor()` 로 죽습니다
